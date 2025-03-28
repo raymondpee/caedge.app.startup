@@ -10,32 +10,41 @@ if (-Not (Test-Path $PemPath)) {
     exit 1
 }
 
-Write-Host "Checking if all docker services are already running on EC2..." -ForegroundColor Yellow
+Write-Host "Checking and starting docker services on EC2..." -ForegroundColor Yellow
 
-# 使用单引号包裹 Bash 脚本内容，防止 PowerShell 执行任何 $ 或转义
 $ScriptLines = @(
   'cd caedge.application.cloud.gateway || { echo "Directory not found"; exit 1; }',
+
+  '# 第一次检查',
   'ALL_SERVICES=$(docker compose config --services | sort | paste -sd " " -)',
   'RUNNING_SERVICES=$(docker compose ps --services --filter status=running | sort | paste -sd " " -)',
+
   'if [ "$ALL_SERVICES" = "$RUNNING_SERVICES" ]; then',
-  '  echo "All services are running"',
+  '  echo "All services are already running"',
+  '  exit 0',
+  'fi',
+
+  '# 执行启动',
+  'echo "Some services not running, starting..."',
+  'docker compose up -d',
+
+  '# 第二次检查',
+  'sleep 5',  # 稍微等几秒，避免刚启动还没 ready
+  'RUNNING_SERVICES=$(docker compose ps --services --filter status=running | sort | paste -sd " " -)',
+
+  'if [ "$ALL_SERVICES" = "$RUNNING_SERVICES" ]; then',
+  '  echo "All services started successfully"',
   'else',
-  '  echo "Some services not running, starting..."',
-  '  docker compose up -d',
-  '  echo "Docker started!"',
+  '  echo "Some services failed to start"',
+  '  echo "Expected: $ALL_SERVICES"',
+  '  echo "Running : $RUNNING_SERVICES"',
   'fi'
 )
 
-# 用 LF 拼接为单个脚本字符串
 $BashScript = [string]::Join("`n", $ScriptLines)
-
-# 编码为 base64
 $Base64Script = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($BashScript))
-
-# 构造远程解码 + 执行命令
 $RemoteCommand = "echo $Base64Script | base64 -d | bash"
 
-# 执行 SSH
 try {
     ssh -i $PemPath "$EC2User@$EC2IP" "$RemoteCommand"
 }
